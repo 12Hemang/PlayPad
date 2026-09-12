@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../gamepad/controller_factory.dart';
 
 /// Configuration for an individual button cluster (e.g. D-Pad, A/B buttons, Select/Start).
 class ClusterLayout {
@@ -76,7 +77,15 @@ class ControllerLayout {
   });
 
   /// Default layout optimized for Landscape orientation (handheld two-thumb layout).
-  factory ControllerLayout.defaultLandscape() {
+  factory ControllerLayout.defaultLandscape({ControllerType controllerType = ControllerType.nes}) {
+    if (controllerType == ControllerType.n64) {
+      return const ControllerLayout(
+        dpad: ClusterLayout(dx: 0.18, dy: 0.62, scale: 1.15),
+        actionButtons: ClusterLayout(dx: 0.78, dy: 0.62, scale: 1.05),
+        menuButtons: ClusterLayout(dx: 0.50, dy: 0.78, scale: 1.0),
+        directionType: DirectionControlType.joystick,
+      );
+    }
     return const ControllerLayout(
       // Left side thumb zone
       dpad: ClusterLayout(dx: 0.18, dy: 0.60, scale: 1.15),
@@ -89,7 +98,15 @@ class ControllerLayout {
   }
 
   /// Default layout optimized for Portrait orientation.
-  factory ControllerLayout.defaultPortrait() {
+  factory ControllerLayout.defaultPortrait({ControllerType controllerType = ControllerType.nes}) {
+    if (controllerType == ControllerType.n64) {
+      return const ControllerLayout(
+        dpad: ClusterLayout(dx: 0.24, dy: 0.66, scale: 1.0),
+        actionButtons: ClusterLayout(dx: 0.76, dy: 0.66, scale: 0.95),
+        menuButtons: ClusterLayout(dx: 0.50, dy: 0.46, scale: 0.95),
+        directionType: DirectionControlType.joystick,
+      );
+    }
     return const ControllerLayout(
       // Lower-left
       dpad: ClusterLayout(dx: 0.26, dy: 0.65, scale: 1.0),
@@ -152,26 +169,40 @@ class ControllerLayout {
   // ==========================================
   static const MethodChannel _channel = MethodChannel('com.example.ble/gamepad');
 
-  static Future<void> save(Orientation orientation, ControllerLayout layout) async {
-    final key = orientation == Orientation.landscape
-        ? 'layout_landscape'
-        : 'layout_portrait';
+  static Future<void> save(
+    Orientation orientation,
+    ControllerLayout layout, {
+    ControllerType controllerType = ControllerType.nes,
+  }) async {
+    final key = 'layout_${controllerType.name}_${orientation == Orientation.landscape ? 'landscape' : 'portrait'}';
     try {
       await _channel.invokeMethod('savePreference', {
         'key': key,
         'value': layout.toJson(),
       });
+      if (controllerType == ControllerType.nes) {
+        final legacyKey = orientation == Orientation.landscape ? 'layout_landscape' : 'layout_portrait';
+        await _channel.invokeMethod('savePreference', {
+          'key': legacyKey,
+          'value': layout.toJson(),
+        });
+      }
     } catch (_) {
       // Ignored if channel not available
     }
   }
 
-  static Future<ControllerLayout> load(Orientation orientation) async {
-    final key = orientation == Orientation.landscape
-        ? 'layout_landscape'
-        : 'layout_portrait';
+  static Future<ControllerLayout> load(
+    Orientation orientation, {
+    ControllerType controllerType = ControllerType.nes,
+  }) async {
+    final key = 'layout_${controllerType.name}_${orientation == Orientation.landscape ? 'landscape' : 'portrait'}';
     try {
-      final jsonStr = await _channel.invokeMethod<String>('getPreference', {'key': key});
+      var jsonStr = await _channel.invokeMethod<String>('getPreference', {'key': key});
+      if ((jsonStr == null || jsonStr.isEmpty) && controllerType == ControllerType.nes) {
+        final legacyKey = orientation == Orientation.landscape ? 'layout_landscape' : 'layout_portrait';
+        jsonStr = await _channel.invokeMethod<String>('getPreference', {'key': legacyKey});
+      }
       if (jsonStr != null && jsonStr.isNotEmpty) {
         return ControllerLayout.fromJson(jsonStr);
       }
@@ -179,7 +210,7 @@ class ControllerLayout {
       // Ignored
     }
     return orientation == Orientation.landscape
-        ? ControllerLayout.defaultLandscape()
-        : ControllerLayout.defaultPortrait();
+        ? ControllerLayout.defaultLandscape(controllerType: controllerType)
+        : ControllerLayout.defaultPortrait(controllerType: controllerType);
   }
 }

@@ -14,7 +14,8 @@ class PermissionStatusResult {
     required this.missingPermissions,
   });
 
-  bool get isAllReady => permissionsGranted && bluetoothEnabled && locationEnabled;
+  // Only requires Bluetooth permissions and Bluetooth turned ON to start using Gamepad!
+  bool get isAllReady => permissionsGranted && bluetoothEnabled;
 
   factory PermissionStatusResult.fromMap(Map<dynamic, dynamic> map) {
     final missing = (map['missingPermissions'] as List<dynamic>?)
@@ -101,6 +102,38 @@ class PermissionService {
       return res ?? false;
     } catch (e) {
       _logger.error('PERM_SVC', 'Error opening location settings: $e');
+      return false;
+    }
+  }
+
+  /// Checks whether Location permission is granted (used only when user initiates scanning).
+  Future<bool> isLocationPermissionGranted() async {
+    try {
+      final res = await _methodChannel.invokeMethod<bool>('checkLocationPermission');
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Checks if Location Services (GPS) is turned ON.
+  Future<bool> isLocationServicesEnabled() async {
+    try {
+      final res = await _methodChannel.invokeMethod<bool>('isLocationServicesEnabled');
+      return res ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Requests the Android Location permission dialog specifically for device scanning.
+  Future<bool> requestLocationPermission() async {
+    try {
+      _logger.info('PERM_SVC', 'Requesting Location permission for Bluetooth scanning...');
+      final res = await _methodChannel.invokeMethod<bool>('requestLocationPermission');
+      return res ?? false;
+    } catch (e) {
+      _logger.error('PERM_SVC', 'Error requesting Location permission: $e');
       return false;
     }
   }

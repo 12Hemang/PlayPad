@@ -43,6 +43,12 @@ class HidRegister {
   Stream<bool> get registrationStateStream => _registrationStateController.stream;
   Stream<HidAckEvent> get ackStream => _ackController.stream;
 
+  /// Resets local registration state when Bluetooth is turned off or on.
+  void resetRegistration() {
+    _isRegistered = false;
+    _registrationStateController.add(false);
+  }
+
   HidRegister() {
     _listenToEvents();
   }

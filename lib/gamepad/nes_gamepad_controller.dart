@@ -62,6 +62,13 @@ class NesGamepadController extends GamepadController {
   bool get isXPressed => _x;
   bool get isYPressed => _y;
 
+  /// Whether A and B buttons are swapped to align with NES & N64 emulator expectations
+  /// (Physical A = Jump = Bit 1, Physical B = Run/Attack = Bit 0).
+  bool swapAB = true;
+
+  /// Whether X and Y buttons are swapped (for SNES Nintendo layout).
+  bool swapXY = false;
+
   /// Standard USB HID Gamepad Report Descriptor:
   /// - 1 Byte X Axis (0..255, neutral 128)
   /// - 1 Byte Y Axis (0..255, neutral 128)
@@ -369,19 +376,19 @@ class NesGamepadController extends GamepadController {
     final hat = _calculateHatSwitch() & 0x0F;
 
     // 4. Buttons 1..8:
-    // Button 1 (bit 0): A (South / KEYCODE_BUTTON_A)
-    // Button 2 (bit 1): B (East / KEYCODE_BUTTON_B)
-    // Button 3 (bit 2): X in 4-button pads
-    // Button 4 (bit 3): X in Linux Generic.kl (North / KEYCODE_BUTTON_X)
-    // Button 5 (bit 4): Y in Linux Generic.kl (West / KEYCODE_BUTTON_Y)
-    // Button 6 (bit 5): Y alternative
-    // Button 7 (bit 6): L1
-    // Button 8 (bit 7): R1
+    // When swapAB is enabled (default for NES & N64), maps physical button A (East) to Bit 1
+    // (Button 2 / KEYCODE_BUTTON_B -> RetroPad A) and physical button B (South) to Bit 0
+    // (Button 1 / KEYCODE_BUTTON_A -> RetroPad B) so A jumps and B attacks/runs correctly.
+    final actualA = swapAB ? _b : _a;
+    final actualB = swapAB ? _a : _b;
+    final actualX = swapXY ? _y : _x;
+    final actualY = swapXY ? _x : _y;
+
     int buttonsLow = 0;
-    if (_a) buttonsLow |= (1 << 0);
-    if (_b) buttonsLow |= (1 << 1);
-    if (_x) buttonsLow |= (1 << 2) | (1 << 3); // Sets both Button 3 and Button 4
-    if (_y) buttonsLow |= (1 << 4) | (1 << 5); // Sets Button 5 and Button 6
+    if (actualA) buttonsLow |= (1 << 0);
+    if (actualB) buttonsLow |= (1 << 1);
+    if (actualX) buttonsLow |= (1 << 2) | (1 << 3); // Sets both Button 3 and Button 4
+    if (actualY) buttonsLow |= (1 << 4) | (1 << 5); // Sets Button 5 and Button 6
 
     // 5. Buttons 9..16:
     // Button 9 (bit 0 of high byte): Select (in 10-button pads)

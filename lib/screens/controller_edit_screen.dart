@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../gamepad/controller_factory.dart';
 import '../models/controller_layout.dart';
 
 enum SelectedCluster {
@@ -9,15 +10,30 @@ enum SelectedCluster {
   menuButtons,
 }
 
+/// Result returned by ControllerEditScreen upon saving.
+class ControllerEditResult {
+  final ControllerType selectedType;
+  final ControllerLayout portraitLayout;
+  final ControllerLayout landscapeLayout;
+
+  const ControllerEditResult({
+    required this.selectedType,
+    required this.portraitLayout,
+    required this.landscapeLayout,
+  });
+}
+
 class ControllerEditScreen extends StatefulWidget {
-  final ControllerLayout initialPortraitLayout;
-  final ControllerLayout initialLandscapeLayout;
+  final ControllerType initialControllerType;
+  final ControllerLayout? initialPortraitLayout;
+  final ControllerLayout? initialLandscapeLayout;
   final Orientation initialOrientation;
 
   const ControllerEditScreen({
     super.key,
-    required this.initialPortraitLayout,
-    required this.initialLandscapeLayout,
+    this.initialControllerType = ControllerType.nes,
+    this.initialPortraitLayout,
+    this.initialLandscapeLayout,
     this.initialOrientation = Orientation.landscape, // Initially load as landscape
   });
 
@@ -26,9 +42,10 @@ class ControllerEditScreen extends StatefulWidget {
 }
 
 class _ControllerEditScreenState extends State<ControllerEditScreen> {
+  late ControllerType _controllerType;
   late Orientation _currentOrientation;
-  late ControllerLayout _portraitLayout;
-  late ControllerLayout _landscapeLayout;
+  final Map<ControllerType, ControllerLayout> _portraitLayouts = {};
+  final Map<ControllerType, ControllerLayout> _landscapeLayouts = {};
   SelectedCluster _selectedCluster = SelectedCluster.none;
 
   // Multi-touch gesture baseline values
@@ -38,23 +55,63 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
   double _gestureStartScale = 1.0;
   double _gestureStartRotation = 0.0;
 
-  ControllerLayout get _currentLayout =>
-      _currentOrientation == Orientation.landscape ? _landscapeLayout : _portraitLayout;
+  ControllerLayout get _currentLayout => _currentOrientation == Orientation.landscape
+      ? _landscapeLayouts[_controllerType]!
+      : _portraitLayouts[_controllerType]!;
 
   set _currentLayout(ControllerLayout layout) {
     if (_currentOrientation == Orientation.landscape) {
-      _landscapeLayout = layout;
+      _landscapeLayouts[_controllerType] = layout;
     } else {
-      _portraitLayout = layout;
+      _portraitLayouts[_controllerType] = layout;
     }
   }
 
   @override
   void initState() {
     super.initState();
+    _controllerType = widget.initialControllerType;
     _currentOrientation = widget.initialOrientation;
-    _portraitLayout = widget.initialPortraitLayout;
-    _landscapeLayout = widget.initialLandscapeLayout;
+
+    // Seed layouts for all controller types
+    for (final type in ControllerType.values) {
+      _portraitLayouts[type] = ControllerLayout.defaultPortrait(controllerType: type);
+      _landscapeLayouts[type] = ControllerLayout.defaultLandscape(controllerType: type);
+    }
+
+    if (widget.initialPortraitLayout != null) {
+      _portraitLayouts[_controllerType] = widget.initialPortraitLayout!;
+    }
+    if (widget.initialLandscapeLayout != null) {
+      _landscapeLayouts[_controllerType] = widget.initialLandscapeLayout!;
+    }
+
+    _loadAllControllerLayouts();
+  }
+
+  Future<void> _loadAllControllerLayouts() async {
+    for (final type in ControllerType.values) {
+      final p = await ControllerLayout.load(Orientation.portrait, controllerType: type);
+      final l = await ControllerLayout.load(Orientation.landscape, controllerType: type);
+      if (mounted) {
+        setState(() {
+          if (type != widget.initialControllerType || widget.initialPortraitLayout == null) {
+            _portraitLayouts[type] = p;
+          }
+          if (type != widget.initialControllerType || widget.initialLandscapeLayout == null) {
+            _landscapeLayouts[type] = l;
+          }
+        });
+      }
+    }
+  }
+
+  void _switchControllerType(ControllerType newType) {
+    if (_controllerType == newType) return;
+    setState(() {
+      _controllerType = newType;
+      _selectedCluster = SelectedCluster.none;
+    });
   }
 
   ClusterLayout _getClusterLayout(SelectedCluster cluster) {
@@ -143,40 +200,74 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
   void _resetToDefault() {
     setState(() {
       if (_currentOrientation == Orientation.landscape) {
-        _landscapeLayout = ControllerLayout.defaultLandscape();
+        _landscapeLayouts[_controllerType] =
+            ControllerLayout.defaultLandscape(controllerType: _controllerType);
       } else {
-        _portraitLayout = ControllerLayout.defaultPortrait();
+        _portraitLayouts[_controllerType] =
+            ControllerLayout.defaultPortrait(controllerType: _controllerType);
       }
       _selectedCluster = SelectedCluster.none;
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Reset ${_currentOrientation.name.toUpperCase()} layout to default.'),
+        content: Text(
+          'Reset ${ControllerFactory.getShortName(_controllerType)} ${_currentOrientation.name.toUpperCase()} layout to default.',
+        ),
         duration: const Duration(seconds: 2),
       ),
     );
   }
 
   void _saveAndExit() async {
-    await ControllerLayout.save(Orientation.portrait, _portraitLayout);
-    await ControllerLayout.save(Orientation.landscape, _landscapeLayout);
+    for (final type in ControllerType.values) {
+      await ControllerLayout.save(
+        Orientation.portrait,
+        _portraitLayouts[type]!,
+        controllerType: type,
+      );
+      await ControllerLayout.save(
+        Orientation.landscape,
+        _landscapeLayouts[type]!,
+        controllerType: type,
+      );
+    }
+    await ControllerFactory.saveActiveType(_controllerType);
+
     if (!mounted) return;
-    Navigator.of(context).pop({
-      'portrait': _portraitLayout,
-      'landscape': _landscapeLayout,
-    });
+    Navigator.of(context).pop(ControllerEditResult(
+      selectedType: _controllerType,
+      portraitLayout: _portraitLayouts[_controllerType]!,
+      landscapeLayout: _landscapeLayouts[_controllerType]!,
+    ));
   }
 
   String _getClusterTitle(SelectedCluster cluster) {
-    switch (cluster) {
-      case SelectedCluster.dpad:
-        return _currentLayout.directionType == DirectionControlType.joystick ? 'Joystick' : 'D-Pad';
-      case SelectedCluster.actionButtons:
-        return 'ABXY Buttons';
-      case SelectedCluster.menuButtons:
-        return 'Select / Start';
-      case SelectedCluster.none:
-        return '';
+    if (_controllerType == ControllerType.n64) {
+      switch (cluster) {
+        case SelectedCluster.dpad:
+          return _currentLayout.directionType == DirectionControlType.joystick
+              ? 'N64 360° Analog Stick'
+              : 'N64 D-Pad';
+        case SelectedCluster.actionButtons:
+          return 'Yellow C-Dial & A/B Buttons';
+        case SelectedCluster.menuButtons:
+          return 'N64 Red Start Button';
+        case SelectedCluster.none:
+          return '';
+      }
+    } else {
+      switch (cluster) {
+        case SelectedCluster.dpad:
+          return _currentLayout.directionType == DirectionControlType.joystick
+              ? 'Joystick'
+              : 'NES D-Pad';
+        case SelectedCluster.actionButtons:
+          return 'NES Action Buttons (A/B)';
+        case SelectedCluster.menuButtons:
+          return 'Select & Start';
+        case SelectedCluster.none:
+          return '';
+      }
     }
   }
 
@@ -192,7 +283,75 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
         actions: [
-          // Direction Control Type Selector (D-Pad <-> Joystick)
+          // 1. Controller Type Dropdown (NES <-> N64)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: PopupMenuButton<ControllerType>(
+              tooltip: 'Select Controller to Edit (NES / N64)',
+              initialValue: _controllerType,
+              onSelected: _switchControllerType,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF21262D),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFF00E676)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _controllerType == ControllerType.n64
+                          ? Icons.videogame_asset
+                          : Icons.sports_esports,
+                      size: 15,
+                      color: const Color(0xFF00E676),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      ControllerFactory.getShortName(_controllerType),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 16),
+                  ],
+                ),
+              ),
+              itemBuilder: (_) => ControllerType.values
+                  .map(
+                    (type) => PopupMenuItem(
+                      value: type,
+                      child: Row(
+                        children: [
+                          Icon(
+                            type == ControllerType.n64
+                                ? Icons.videogame_asset
+                                : Icons.sports_esports,
+                            color: type == _controllerType ? const Color(0xFF00E676) : Colors.white70,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            ControllerFactory.getDisplayName(type),
+                            style: TextStyle(
+                              color: type == _controllerType ? const Color(0xFF00E676) : Colors.white,
+                              fontWeight: type == _controllerType ? FontWeight.bold : FontWeight.normal,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          const SizedBox(width: 6),
+
+          // 2. Direction Control Type Selector (D-Pad <-> Joystick)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10),
             child: InkWell(
@@ -225,7 +384,7 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
                     const SizedBox(width: 4),
                     Text(
                       _currentLayout.directionType == DirectionControlType.joystick
-                          ? 'Joystick'
+                          ? 'Stick'
                           : 'D-Pad',
                       style: const TextStyle(
                         color: Colors.white,
@@ -240,7 +399,7 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
           ),
           const SizedBox(width: 4),
 
-          // Orientation toggle button
+          // 3. Orientation toggle button
           IconButton(
             icon: Icon(
               _currentOrientation == Orientation.landscape
@@ -258,24 +417,26 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
               });
             },
           ),
-          // Reset to default
+
+          // 4. Reset to default
           IconButton(
             icon: const Icon(Icons.restore, color: Colors.white70),
             tooltip: 'Reset to Default',
             onPressed: _resetToDefault,
           ),
-          // Save and Done
+
+          // 5. Save and Done
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF00E676),
                 foregroundColor: Colors.black,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
               ),
               icon: const Icon(Icons.check, size: 16),
-              label: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              label: const Text('Save', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
               onPressed: _saveAndExit,
             ),
           ),
@@ -290,12 +451,25 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
               color: const Color(0xFF1A1A22),
               child: Row(
                 children: [
-                  const Icon(Icons.pinch, size: 16, color: Color(0xFF64B5F6)),
-                  const SizedBox(width: 8),
+                  Icon(
+                    _controllerType == ControllerType.n64 ? Icons.videogame_asset : Icons.sports_esports,
+                    size: 15,
+                    color: const Color(0xFF00E676),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Editing ${ControllerFactory.getShortName(_controllerType)}: ',
+                    style: const TextStyle(
+                      color: Color(0xFF00E676),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 11,
+                    ),
+                  ),
                   Expanded(
                     child: Text(
-                      'Drag to move • Pinch to resize • Twist 2 fingers to rotate',
+                      'Drag • Pinch resize • Twist rotate',
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.85), fontSize: 11),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Container(
@@ -333,30 +507,42 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
                           painter: GridPainter(),
                         ),
 
-                        // 1. Directional Control Cluster (D-Pad or Joystick)
+                        // N64 Top Shoulder Triggers Context Bar (preview)
+                        if (_controllerType == ControllerType.n64)
+                          _buildN64ShoulderPreview(canvasSize),
+
+                        // 1. Left Movement Dial Cluster (D-Pad or 360° Analog Joystick)
                         _buildInteractiveCluster(
                           cluster: SelectedCluster.dpad,
                           layout: _currentLayout.dpad,
                           canvasSize: canvasSize,
-                          child: _currentLayout.directionType == DirectionControlType.joystick
-                              ? _buildJoystickMock(_currentLayout.dpad.scale)
-                              : _buildDpadMock(_currentLayout.dpad.scale),
+                          child: _controllerType == ControllerType.n64
+                              ? (_currentLayout.directionType == DirectionControlType.joystick
+                                  ? _buildN64JoystickMock(_currentLayout.dpad.scale)
+                                  : _buildN64DpadMock(_currentLayout.dpad.scale))
+                              : (_currentLayout.directionType == DirectionControlType.joystick
+                                  ? _buildJoystickMock(_currentLayout.dpad.scale)
+                                  : _buildDpadMock(_currentLayout.dpad.scale)),
                         ),
 
-                        // 2. Action Buttons Cluster (ABXY)
+                        // 2. Action Buttons Cluster (NES ABXY vs N64 Yellow C-Dial + A/B)
                         _buildInteractiveCluster(
                           cluster: SelectedCluster.actionButtons,
                           layout: _currentLayout.actionButtons,
                           canvasSize: canvasSize,
-                          child: _buildActionButtonsMock(_currentLayout.actionButtons.scale),
+                          child: _controllerType == ControllerType.n64
+                              ? _buildN64RightClusterMock(_currentLayout.actionButtons.scale)
+                              : _buildActionButtonsMock(_currentLayout.actionButtons.scale),
                         ),
 
-                        // 3. Menu Buttons Cluster (Select & Start)
+                        // 3. Menu Buttons Cluster (NES Select/Start vs N64 Start Button)
                         _buildInteractiveCluster(
                           cluster: SelectedCluster.menuButtons,
                           layout: _currentLayout.menuButtons,
                           canvasSize: canvasSize,
-                          child: _buildMenuButtonsMock(_currentLayout.menuButtons.scale),
+                          child: _controllerType == ControllerType.n64
+                              ? _buildN64StartButtonMock(_currentLayout.menuButtons.scale)
+                              : _buildMenuButtonsMock(_currentLayout.menuButtons.scale),
                         ),
 
                         // Floating Gesture HUD when a cluster is active
@@ -752,6 +938,271 @@ class _ControllerEditScreenState extends State<ControllerEditScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  // ==========================================
+  // N64 MOCK BUTTON GRAPHICS
+  // ==========================================
+
+  Widget _buildN64ShoulderPreview(Size canvasSize) {
+    return Positioned(
+      top: 6,
+      left: 16,
+      right: 16,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _buildTriggerChip('L BUMPER'),
+            _buildTriggerChip('Z TRIGGER'),
+            _buildTriggerChip('R BUMPER'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTriggerChip(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C313A).withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Colors.white38,
+          fontSize: 9,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildN64JoystickMock(double scale) {
+    final baseRadius = 65.0 * scale;
+    final knobRadius = 30.0 * scale;
+
+    return Container(
+      width: baseRadius * 2,
+      height: baseRadius * 2,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: const Color(0xFF1E1E26),
+        border: Border.all(color: const Color(0xFF616161), width: 3),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 8, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // N64 Octagonal guide ring
+          Container(
+            width: baseRadius * 1.5,
+            height: baseRadius * 1.5,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white24, width: 1.5),
+            ),
+          ),
+          // Center Knob with classic 3 concentric grip rings
+          Container(
+            width: knobRadius * 2,
+            height: knobRadius * 2,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: const RadialGradient(
+                colors: [Color(0xFF9E9E9E), Color(0xFF424242)],
+              ),
+              border: Border.all(color: const Color(0xFFBDBDBD), width: 2),
+              boxShadow: const [
+                BoxShadow(color: Colors.black87, blurRadius: 6, offset: Offset(0, 3)),
+              ],
+            ),
+            child: Center(
+              child: Container(
+                width: knobRadius * 1.2,
+                height: knobRadius * 1.2,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF616161), width: 1.5),
+                ),
+                child: Center(
+                  child: Container(
+                    width: knobRadius * 0.6,
+                    height: knobRadius * 0.6,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Color(0xFF424242),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildN64DpadMock(double scale) {
+    return _buildDpadMock(scale);
+  }
+
+  Widget _buildN64RightClusterMock(double scale) {
+    final cDialSize = 135.0 * scale;
+    final abBtnSize = 46.0 * scale;
+
+    return Container(
+      padding: EdgeInsets.all(6 * scale),
+      decoration: BoxDecoration(
+        color: const Color(0xFF22222A).withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // Action Buttons A (Blue) & B (Green)
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildRoundBtn('B', abBtnSize, const Color(0xFF2E7D32)),
+              SizedBox(height: 12 * scale),
+              _buildRoundBtn('A', abBtnSize * 1.12, const Color(0xFF1565C0)),
+            ],
+          ),
+          SizedBox(width: 12 * scale),
+          // Yellow C-Buttons Dial Pad
+          _buildN64CDialMock(cDialSize, scale),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildN64CDialMock(double totalSize, double scale) {
+    final btnSize = 36.0 * scale;
+    final center = totalSize / 2;
+    final offsetDistance = totalSize * 0.32;
+
+    return Container(
+      width: totalSize,
+      height: totalSize,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: const Color(0xFF1B1B22),
+        border: Border.all(color: const Color(0xFFFFD600).withValues(alpha: 0.6), width: 2),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 6, offset: Offset(0, 3)),
+        ],
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Center "C" badge
+          Container(
+            width: 26 * scale,
+            height: 26 * scale,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF2A2A35),
+              border: Border.all(color: const Color(0xFFFFD600), width: 1.5),
+            ),
+            child: Center(
+              child: Text(
+                'C',
+                style: TextStyle(
+                  color: const Color(0xFFFFD600),
+                  fontSize: 13 * scale,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ),
+          // C-UP
+          Positioned(
+            left: center - btnSize / 2,
+            top: center - offsetDistance - btnSize / 2,
+            child: _buildCButtonFaceMock(Icons.arrow_drop_up, btnSize),
+          ),
+          // C-DOWN
+          Positioned(
+            left: center - btnSize / 2,
+            top: center + offsetDistance - btnSize / 2,
+            child: _buildCButtonFaceMock(Icons.arrow_drop_down, btnSize),
+          ),
+          // C-LEFT
+          Positioned(
+            left: center - offsetDistance - btnSize / 2,
+            top: center - btnSize / 2,
+            child: _buildCButtonFaceMock(Icons.arrow_left, btnSize),
+          ),
+          // C-RIGHT
+          Positioned(
+            left: center + offsetDistance - btnSize / 2,
+            top: center - btnSize / 2,
+            child: _buildCButtonFaceMock(Icons.arrow_right, btnSize),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCButtonFaceMock(IconData icon, double size) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: const RadialGradient(
+          colors: [Color(0xFFFFEA00), Color(0xFFFFC400)],
+        ),
+        border: Border.all(color: Colors.white70, width: 1.5),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 3, offset: Offset(0, 2)),
+        ],
+      ),
+      child: Center(
+        child: Icon(icon, color: Colors.black87, size: size * 0.7),
+      ),
+    );
+  }
+
+  Widget _buildN64StartButtonMock(double scale) {
+    final size = 44.0 * scale;
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: const Color(0xFFD32F2F),
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white30, width: 2),
+        boxShadow: const [
+          BoxShadow(color: Colors.black54, blurRadius: 4, offset: Offset(0, 3)),
+        ],
+      ),
+      child: Center(
+        child: Text(
+          'START',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: size * 0.22,
+            letterSpacing: 0.8,
+          ),
+        ),
+      ),
     );
   }
 }

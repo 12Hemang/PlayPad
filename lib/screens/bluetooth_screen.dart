@@ -6,6 +6,7 @@ import '../hid/bluetooth_connection_manager.dart';
 import '../hid/hid_register.dart';
 import '../hid/permission_service.dart';
 import '../models/log_entry.dart';
+import 'add_roms_dialog.dart';
 
 class BluetoothScreen extends StatefulWidget {
   final BluetoothConnectionManager connManager;
@@ -37,6 +38,7 @@ class _BluetoothScreenState extends State<BluetoothScreen>
   StreamSubscription? _availSub;
   StreamSubscription? _scanSub;
   StreamSubscription? _hidSub;
+  StreamSubscription? _btStateSub;
 
   ConnectionStatus _connectionStatus = ConnectionStatus.disconnected;
   List<BluetoothDeviceInfo> _bondedDevices = [];
@@ -89,16 +91,35 @@ class _BluetoothScreenState extends State<BluetoothScreen>
     _hidSub = widget.hidRegister.registrationStateStream.listen((reg) {
       if (mounted) setState(() => _isHidRegistered = reg);
     });
+
+    _btStateSub = widget.connManager.bluetoothStateStream.listen((enabled) {
+      if (mounted) {
+        setState(() {
+          _isBtEnabled = enabled;
+          _discoverableSecondsRemaining = 0;
+          _discoverableTimer?.cancel();
+          _isDiscovering = false;
+          _availableDevices = [];
+          _bondedDevices = [];
+          _isHidRegistered = false;
+          widget.hidRegister.resetRegistration();
+        });
+        if (enabled) {
+          _loadData();
+        }
+      }
+    });
   }
 
   Future<void> _loadData() async {
     final info = await widget.connManager.getAdapterInfo();
     final bonded = await widget.connManager.refreshBondedDevices();
+    final isRegistered = info?['isHidRegistered'] as bool? ?? widget.hidRegister.isRegistered;
     if (!mounted) return;
     setState(() {
       _adapterInfo = info;
       _isBtEnabled = info?['isEnabled'] as bool? ?? widget.connManager.isBluetoothEnabled;
-      _isHidRegistered = info?['isHidRegistered'] as bool? ?? widget.hidRegister.isRegistered;
+      _isHidRegistered = isRegistered;
       _bondedDevices = bonded;
       _connectionStatus = widget.connManager.status;
     });
@@ -111,24 +132,91 @@ class _BluetoothScreenState extends State<BluetoothScreen>
     _availSub?.cancel();
     _scanSub?.cancel();
     _hidSub?.cancel();
+    _btStateSub?.cancel();
     _discoverableTimer?.cancel();
     _tabController.dispose();
     super.dispose();
   }
 
-  void _toggleBluetooth(bool enable) async {
-    if (enable) {
-      await widget.connManager.enableBluetooth();
-    } else {
-      await widget.connManager.disableBluetooth();
-      _discoverableTimer?.cancel();
-      setState(() {
-        _discoverableSecondsRemaining = 0;
-        _isDiscovering = false;
-      });
+  void _handleTurnOnBluetooth() async {
+    setState(() {
+      _availableDevices = [];
+      _bondedDevices = [];
+      _isHidRegistered = false;
+      widget.hidRegister.resetRegistration();
+    });
+    final ok = await widget.connManager.enableBluetooth();
+    // Native system dialog handles the prompt. When allowed, ACTION_STATE_CHANGED
+    // receiver automatically updates _isBtEnabled and reloads UI.
+    if (!ok && mounted) {
+      final current = await widget.connManager.checkBluetoothEnabled();
+      if (mounted) setState(() => _isBtEnabled = current);
     }
-    await Future.delayed(const Duration(milliseconds: 500));
-    _loadData();
+  }
+
+  void _handleTurnOffBluetooth() async {
+    final ok = await widget.connManager.disableBluetooth();
+    if (ok) {
+      if (mounted) {
+        setState(() {
+          _isBtEnabled = false;
+          _discoverableSecondsRemaining = 0;
+          _discoverableTimer?.cancel();
+          _isDiscovering = false;
+          _availableDevices = [];
+          _bondedDevices = [];
+          _isHidRegistered = false;
+          widget.hidRegister.resetRegistration();
+        });
+      }
+    } else {
+      // Android 13+ requires user to toggle off from Quick Settings or Settings
+      if (mounted) {
+        _showBluetoothDisableDialog();
+      }
+    }
+  }
+
+  void _showBluetoothDisableDialog() {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1B1B22),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Colors.white12),
+        ),
+        icon: const Icon(Icons.bluetooth_disabled_rounded, color: Color(0xFFEF5350), size: 36),
+        title: const Text(
+          'Turn Off Bluetooth',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        content: const Text(
+          'Android security policies prevent apps from turning off Bluetooth directly to safeguard active connections (smartwatches, earbuds, etc.).\n\nYou can turn off Bluetooth from your Quick Settings swipe-down panel or in Settings.',
+          style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E88E5),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            icon: const Icon(Icons.settings, size: 14),
+            label: const Text('Open Settings'),
+            onPressed: () {
+              Navigator.pop(ctx);
+              widget.connManager.openBluetoothSettings();
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   void _makeDiscoverable() async {
@@ -154,19 +242,19 @@ class _BluetoothScreenState extends State<BluetoothScreen>
 
   void _toggleScan() async {
     if (_isDiscovering) {
-      print('[SCAN] User tapped Stop Scan. Halting discovery...');
+      debugPrint('[SCAN] User tapped Stop Scan. Halting discovery...');
       setState(() => _isDiscovering = false);
       await widget.connManager.stopDiscovery();
       return;
     }
 
-    print('[SCAN] User tapped Scan. Running pre-scan validation...');
+    debugPrint('[SCAN] User tapped Scan. Running pre-scan validation...');
     final permResult = await _permService.checkPermissions();
-    print('[SCAN] Pre-scan status: granted=${permResult.permissionsGranted}, btEnabled=${permResult.bluetoothEnabled}, locServicesOn=${permResult.locationEnabled}, missing=${permResult.missingPermissions}');
+    debugPrint('[SCAN] Pre-scan status: granted=${permResult.permissionsGranted}, btEnabled=${permResult.bluetoothEnabled}, locServicesOn=${permResult.locationEnabled}, missing=${permResult.missingPermissions}');
 
     // 1. Check if Bluetooth is enabled
     if (!permResult.bluetoothEnabled) {
-      print('[SCAN_FAIL] Bluetooth is OFF. Redirecting to permission/setup screen...');
+      debugPrint('[SCAN_FAIL] Bluetooth is OFF. Redirecting to permission/setup screen...');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -183,7 +271,7 @@ class _BluetoothScreenState extends State<BluetoothScreen>
     // 2. Check if runtime permissions are missing
     if (!permResult.permissionsGranted || permResult.missingPermissions.isNotEmpty) {
       final names = permResult.missingPermissions.map((p) => p.split('.').last).join(', ');
-      print('[SCAN_FAIL] Missing permissions: $names. Redirecting to setup screen...');
+      debugPrint('[SCAN_FAIL] Missing permissions: $names. Redirecting to setup screen...');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -197,22 +285,67 @@ class _BluetoothScreenState extends State<BluetoothScreen>
       return;
     }
 
-    // 3. Check Location (GPS) service
-    if (!permResult.locationEnabled) {
-      print('[SCAN_WARN] Location (GPS) is OFF in Android quick settings.');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Location (GPS) is OFF in phone settings. Nearby devices may not be detected.'),
-            backgroundColor: Colors.orangeAccent,
-            duration: const Duration(seconds: 5),
-            action: SnackBarAction(
-              label: 'Turn ON',
-              textColor: Colors.black,
-              onPressed: () => _permService.openLocationSettings(),
-            ),
+    // 3. Check Location (GPS) & Permission for Bluetooth Scanning
+    final hasLocPerm = await _permService.isLocationPermissionGranted();
+    final isLocOn = await _permService.isLocationServicesEnabled();
+
+    if (!hasLocPerm || !isLocOn) {
+      if (!mounted) return;
+      final shouldProceed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1B1B22),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Colors.white12),
           ),
-        );
+          icon: const Icon(Icons.location_on, color: Color(0xFF42A5F5), size: 36),
+          title: const Text(
+            'Location Required to Scan',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
+          ),
+          content: const Text(
+            'Android requires Location access to discover nearby Bluetooth devices. Your location is never collected, tracked, or sent anywhere.\n\nAlready paired? You can connect directly from the Paired Devices list without scanning.',
+            style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1E88E5),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              icon: const Icon(Icons.check, size: 16),
+              label: const Text('Grant & Scan'),
+              onPressed: () => Navigator.pop(ctx, true),
+            ),
+          ],
+        ),
+      );
+
+      if (shouldProceed != true) {
+        return;
+      }
+
+      if (!hasLocPerm) {
+        final granted = await _permService.requestLocationPermission();
+        if (!granted && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location permission denied. Nearby scanning may be restricted.'),
+              backgroundColor: Colors.orangeAccent,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+
+      if (!isLocOn && mounted) {
+        await _permService.openLocationSettings();
       }
     }
 
@@ -222,13 +355,13 @@ class _BluetoothScreenState extends State<BluetoothScreen>
       _tabController.animateTo(1);
     }
 
-    print('[SCAN] Invoking native startDiscovery()...');
+    debugPrint('[SCAN] Invoking native startDiscovery()...');
     final ok = await widget.connManager.startDiscovery();
-    print('[SCAN] Native startDiscovery() returned: $ok');
+    debugPrint('[SCAN] Native startDiscovery() returned: $ok');
 
     if (!ok && mounted) {
       setState(() => _isDiscovering = false);
-      print('[SCAN_FAIL] Native Bluetooth discovery failed. Redirecting to verify permissions...');
+      debugPrint('[SCAN_FAIL] Native Bluetooth discovery failed. Redirecting to verify permissions...');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Scan failed to start. Redirecting to permission setup...'),
@@ -282,6 +415,19 @@ class _BluetoothScreenState extends State<BluetoothScreen>
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.white),
         ),
         actions: [
+          // Add ROMs button (Push to TV / Local Server)
+          IconButton(
+            icon: const Icon(Icons.send_to_mobile_rounded, color: Color(0xFF00E676), size: 22),
+            tooltip: 'Add ROMs / Push to TV',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (_) => AddRomsDialog(
+                  targetDevice: widget.connManager.connectedDevice ?? widget.connManager.lastConnectedDevice,
+                ),
+              );
+            },
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: ElevatedButton.icon(
@@ -370,12 +516,143 @@ class _BluetoothScreenState extends State<BluetoothScreen>
       ),
       child: Column(
         children: [
-          // Row 1: Bluetooth Switch & Discoverable Pill
+          // Row 1: Bluetooth Status & Action Buttons
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: _isBtEnabled
+                      ? const Color(0xFF1E88E5).withValues(alpha: 0.15)
+                      : Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(
+                  _isBtEnabled ? Icons.bluetooth : Icons.bluetooth_disabled_rounded,
+                  color: _isBtEnabled ? const Color(0xFF42A5F5) : Colors.white38,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          _isBtEnabled ? 'Bluetooth ON' : 'Bluetooth OFF',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _isBtEnabled ? const Color(0xFF00E676) : Colors.white24,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      _isBtEnabled ? adapterName : 'Bluetooth is disabled',
+                      style: const TextStyle(fontSize: 11, color: Colors.white54),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Action Buttons for Bluetooth state
+              if (_isBtEnabled) ...[
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Turn OFF action button
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFFEF5350),
+                        side: BorderSide(color: const Color(0xFFEF5350).withValues(alpha: 0.5)),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                        minimumSize: const Size(0, 28),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                      ),
+                      icon: const Icon(Icons.power_settings_new, size: 12, color: Color(0xFFEF5350)),
+                      label: const Text('Turn OFF', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                      onPressed: _handleTurnOffBluetooth,
+                    ),
+                    const SizedBox(height: 5),
+
+                    // Small Make Visible pill below Turn OFF
+                    InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: _makeDiscoverable,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: isDiscoverable
+                              ? const Color(0xFF00E676).withValues(alpha: 0.12)
+                              : Colors.white.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color: isDiscoverable
+                                ? const Color(0xFF00E676)
+                                : const Color(0xFF1E88E5).withValues(alpha: 0.4),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.visibility,
+                              size: 10,
+                              color: isDiscoverable ? const Color(0xFF00E676) : const Color(0xFF42A5F5),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              isDiscoverable ? 'Visible $timerStr' : 'Make Visible',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: isDiscoverable ? const Color(0xFF00E676) : const Color(0xFF42A5F5),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ] else ...[
+                // Turn ON action button
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E88E5),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                    minimumSize: const Size(0, 30),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  ),
+                  icon: const Icon(Icons.bluetooth, size: 14),
+                  label: const Text('Turn ON', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                  onPressed: _handleTurnOnBluetooth,
+                ),
+              ],
+            ],
+          ),
+
+          const Divider(color: Colors.white10, height: 16),
+
+          // Row 2: HID Gamepad Profile (User maintained)
           Row(
             children: [
               Icon(
-                _isBtEnabled ? Icons.bluetooth : Icons.bluetooth_disabled,
-                color: _isBtEnabled ? const Color(0xFF1E88E5) : Colors.grey,
+                _isHidRegistered ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+                color: _isHidRegistered ? const Color(0xFF00E676) : Colors.orangeAccent,
                 size: 20,
               ),
               const SizedBox(width: 10),
@@ -384,91 +661,41 @@ class _BluetoothScreenState extends State<BluetoothScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      _isBtEnabled ? 'Bluetooth ON' : 'Bluetooth OFF',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
-                    ),
-                    Text(
-                      adapterName,
-                      style: const TextStyle(fontSize: 11, color: Colors.white54),
-                    ),
+                      _isHidRegistered ? 'HID Gamepad: Ready' : 'HID Gamepad: Not Ready',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: _isHidRegistered ? const Color(0xFF00E676) : Colors.orangeAccent,
+                      ),
+                    )
                   ],
                 ),
               ),
-
-              // Discoverable Button
-              if (_isBtEnabled) ...[
+              if (_isHidRegistered)
                 OutlinedButton(
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: isDiscoverable ? const Color(0xFF00E676) : const Color(0xFF1E88E5),
-                    side: BorderSide(
-                      color: isDiscoverable ? const Color(0xFF00E676) : const Color(0xFF1E88E5),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
                     minimumSize: const Size(0, 28),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                   ),
-                  onPressed: _makeDiscoverable,
-                  child: Text(
-                    isDiscoverable ? 'Visible ($timerStr)' : 'Make Visible',
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                  ),
-                ),
-                const SizedBox(width: 8),
-              ],
-
-              // Switch
-              Switch(
-                value: _isBtEnabled,
-                activeThumbColor: const Color(0xFF1E88E5),
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                onChanged: _toggleBluetooth,
-              ),
-            ],
-          ),
-
-          const Divider(color: Colors.white10, height: 16),
-
-          // Row 2: HID Gamepad Profile
-          Row(
-            children: [
-              Icon(
-                Icons.sports_esports,
-                color: _isHidRegistered ? const Color(0xFF00E676) : Colors.orangeAccent,
-                size: 20,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  _isHidRegistered ? 'HID Gamepad (Active)' : 'HID Gamepad (Inactive)',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                    color: _isHidRegistered ? const Color(0xFF00E676) : Colors.orangeAccent,
-                  ),
-                ),
-              ),
-              if (_isHidRegistered)
-                TextButton(
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.white54,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    minimumSize: const Size(0, 26),
-                  ),
                   onPressed: _unregisterGamepad,
-                  child: const Text('Unregister', style: TextStyle(fontSize: 11)),
+                  child: const Text('Unregister', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
                 )
               else
-                ElevatedButton(
+                ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.orangeAccent,
                     foregroundColor: Colors.black,
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                    minimumSize: const Size(0, 26),
+                    minimumSize: const Size(0, 28),
                     elevation: 0,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                   ),
+                  icon: const Icon(Icons.app_registration, size: 14),
+                  label: const Text('Register', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                   onPressed: _registerGamepad,
-                  child: const Text('Register Gamepad', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                 ),
             ],
           ),
@@ -487,16 +714,25 @@ class _BluetoothScreenState extends State<BluetoothScreen>
         // Tabs
         Expanded(
           child: Container(
-            height: 38,
+            height: 40,
+            padding: const EdgeInsets.all(3),
             decoration: BoxDecoration(
               color: const Color(0xFF181820),
               borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white10),
             ),
             child: TabBar(
               controller: _tabController,
+              dividerColor: Colors.transparent,
+              indicatorSize: TabBarIndicatorSize.tab,
+              splashFactory: NoSplash.splashFactory,
+              overlayColor: WidgetStateProperty.all(Colors.transparent),
               indicator: BoxDecoration(
-                color: const Color(0xFF262632),
-                borderRadius: BorderRadius.circular(8),
+                color: const Color(0xFF2E323E),
+                borderRadius: BorderRadius.circular(6),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 1)),
+                ],
               ),
               labelColor: Colors.white,
               unselectedLabelColor: Colors.white54,
@@ -516,9 +752,9 @@ class _BluetoothScreenState extends State<BluetoothScreen>
             backgroundColor: _isDiscovering ? const Color(0xFFD32F2F) : const Color(0xFF1E88E5),
             foregroundColor: Colors.white,
             elevation: 0,
-            minimumSize: const Size(0, 38),
+            minimumSize: const Size(0, 40),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14),
           ),
           icon: _isDiscovering
               ? const SizedBox(
@@ -598,6 +834,9 @@ class _BluetoothScreenState extends State<BluetoothScreen>
   // ==========================================
 
   Widget _buildPairedList() {
+    if (!_isBtEnabled) {
+      return _buildEmptyNotice('Bluetooth is turned off.\nTap "Turn ON" above to view and connect paired gamepads.');
+    }
     if (_bondedDevices.isEmpty) {
       return _buildEmptyNotice('No paired devices found.\nTap "Make Visible" above or switch to Available tab to pair.');
     }
@@ -608,6 +847,9 @@ class _BluetoothScreenState extends State<BluetoothScreen>
   }
 
   Widget _buildAvailableList() {
+    if (!_isBtEnabled) {
+      return _buildEmptyNotice('Bluetooth is turned off.\nTap "Turn ON" above to search for nearby devices.');
+    }
     if (_availableDevices.isEmpty) {
       return _buildEmptyNotice(
         _isDiscovering

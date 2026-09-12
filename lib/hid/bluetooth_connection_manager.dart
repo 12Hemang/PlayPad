@@ -13,6 +13,12 @@ enum ConnectionStatus {
 /// Class responsible for managing Bluetooth device connections, pairing/bonded status,
 /// active nearby device scanning, capabilities discovery, reconnecting, and logging.
 class BluetoothConnectionManager {
+  static BluetoothConnectionManager? _instance;
+  static BluetoothConnectionManager get instance => _instance ??= BluetoothConnectionManager._internal();
+
+  factory BluetoothConnectionManager() => instance;
+  BluetoothConnectionManager._internal();
+
   static const MethodChannel _methodChannel = MethodChannel('com.example.ble/gamepad');
   static const EventChannel _eventChannel = EventChannel('com.example.ble/events');
 
@@ -37,6 +43,8 @@ class BluetoothConnectionManager {
       StreamController<List<BluetoothDeviceInfo>>.broadcast();
   final StreamController<bool> _isDiscoveringController =
       StreamController<bool>.broadcast();
+  final StreamController<bool> _bluetoothStateController =
+      StreamController<bool>.broadcast();
 
   ConnectionStatus get status => _status;
   BluetoothDeviceInfo? get connectedDevice => _connectedDevice;
@@ -53,6 +61,7 @@ class BluetoothConnectionManager {
   Stream<List<BluetoothDeviceInfo>> get availableDevicesStream =>
       _availableDevicesController.stream;
   Stream<bool> get isDiscoveringStream => _isDiscoveringController.stream;
+  Stream<bool> get bluetoothStateStream => _bluetoothStateController.stream;
 
   /// Initializes listeners for native Bluetooth and HID events.
   Future<void> init() async {
@@ -168,11 +177,16 @@ class BluetoothConnectionManager {
       case 'bt_state':
         final enabled = event['enabled'] as bool? ?? false;
         _isBluetoothEnabled = enabled;
+        _bluetoothStateController.add(enabled);
         _logger.info('CONN_MGR', 'Bluetooth state updated: ${enabled ? "ON" : "OFF"}');
         if (!enabled) {
           _isDiscovering = false;
           _isDiscoveringController.add(false);
+          _availableDevicesMap.clear();
+          _availableDevicesController.add([]);
           _updateConnectionStatus('disconnected', null);
+        } else {
+          refreshBondedDevices();
         }
         break;
     }
@@ -346,9 +360,12 @@ class BluetoothConnectionManager {
 
   /// Turns Bluetooth ON.
   Future<bool> enableBluetooth() async {
-    _logger.info('CONN_MGR', 'Turning Bluetooth ON...');
+    _logger.info('CONN_MGR', 'Turning Bluetooth ON in same screen...');
     try {
       final ok = await _methodChannel.invokeMethod<bool>('enableBluetooth');
+      final isEnabled = await _methodChannel.invokeMethod<bool>('isBluetoothEnabled') ?? (ok ?? false);
+      _isBluetoothEnabled = isEnabled;
+      _bluetoothStateController.add(_isBluetoothEnabled);
       return ok ?? false;
     } catch (e) {
       _logger.error('CONN_MGR', 'Failed to enable Bluetooth: $e');
@@ -356,15 +373,41 @@ class BluetoothConnectionManager {
     }
   }
 
-  /// Turns Bluetooth OFF.
+  /// Turns Bluetooth OFF in-app. Returns true if disabled programmatically, or false if OS requires user interaction.
   Future<bool> disableBluetooth() async {
-    _logger.info('CONN_MGR', 'Turning Bluetooth OFF...');
+    _logger.info('CONN_MGR', 'Turning Bluetooth OFF in same screen...');
     try {
-      final ok = await _methodChannel.invokeMethod<bool>('disableBluetooth');
-      return ok ?? false;
+      final ok = await _methodChannel.invokeMethod<bool>('disableBluetooth') ?? false;
+      final isEnabled = await _methodChannel.invokeMethod<bool>('isBluetoothEnabled') ?? false;
+      _isBluetoothEnabled = isEnabled;
+      _bluetoothStateController.add(_isBluetoothEnabled);
+      return ok;
     } catch (e) {
       _logger.error('CONN_MGR', 'Failed to disable Bluetooth: $e');
       return false;
+    }
+  }
+
+  /// Checks and refreshes the current Bluetooth enabled state.
+  Future<bool> checkBluetoothEnabled() async {
+    try {
+      final isEnabled = await _methodChannel.invokeMethod<bool>('isBluetoothEnabled') ?? false;
+      if (isEnabled != _isBluetoothEnabled) {
+        _isBluetoothEnabled = isEnabled;
+        _bluetoothStateController.add(_isBluetoothEnabled);
+      }
+      return _isBluetoothEnabled;
+    } catch (_) {
+      return _isBluetoothEnabled;
+    }
+  }
+
+  /// Opens the system Bluetooth settings (only when requested by user).
+  Future<void> openBluetoothSettings() async {
+    try {
+      await _methodChannel.invokeMethod('openBluetoothSettings');
+    } catch (e) {
+      _logger.error('CONN_MGR', 'Failed to open Bluetooth settings: $e');
     }
   }
 
@@ -375,6 +418,39 @@ class BluetoothConnectionManager {
       return map;
     } catch (e) {
       return null;
+    }
+  }
+
+  /// Synchronizes live Bluetooth hardware connection state with native Android stack.
+  /// Call this when the app resumes from background or switches apps.
+  Future<void> syncConnectionState() async {
+    try {
+      final res = await _methodChannel.invokeMethod<Map>('syncConnectionState');
+      if (res != null) {
+        final isEnabled = res['isBluetoothEnabled'] as bool? ?? false;
+        final isConnected = res['isConnected'] as bool? ?? false;
+        final devName = res['deviceName'] as String? ?? '';
+        final devAddr = res['deviceAddress'] as String? ?? '';
+
+        if (isEnabled != _isBluetoothEnabled) {
+          _isBluetoothEnabled = isEnabled;
+          _bluetoothStateController.add(isEnabled);
+        }
+
+        if (isConnected && devAddr.isNotEmpty) {
+          final dev = BluetoothDeviceInfo(
+            name: devName.isNotEmpty ? devName : 'Connected TV',
+            address: devAddr,
+            bondState: 'bonded',
+          );
+          _updateConnectionStatus('connected', dev);
+        } else if (!isConnected && _status == ConnectionStatus.connected) {
+          _updateConnectionStatus('disconnected', null);
+        }
+        _logger.info('CONN_MGR', '[Sync] Hardware state synced: btOn=$isEnabled, connected=$isConnected ($devName)');
+      }
+    } catch (e) {
+      _logger.error('CONN_MGR', 'Error syncing connection state: $e');
     }
   }
 
@@ -454,5 +530,6 @@ class BluetoothConnectionManager {
     _bondedDevicesController.close();
     _availableDevicesController.close();
     _isDiscoveringController.close();
+    _bluetoothStateController.close();
   }
 }

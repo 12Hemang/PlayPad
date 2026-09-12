@@ -90,10 +90,10 @@ class _PermissionScreenState extends State<PermissionScreen> with WidgetsBinding
                       width: 80,
                       height: 80,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFD32F2F).withOpacity(0.12),
+                        color: const Color(0xFFD32F2F).withValues(alpha: 0.12),
                         shape: BoxShape.circle,
                         border: Border.all(
-                          color: const Color(0xFFD32F2F).withOpacity(0.4),
+                          color: const Color(0xFFD32F2F).withValues(alpha: 0.4),
                           width: 2,
                         ),
                       ),
@@ -157,27 +157,6 @@ class _PermissionScreenState extends State<PermissionScreen> with WidgetsBinding
                             )
                           : null,
                     ),
-                    const SizedBox(height: 12),
-
-                    _buildPermissionCard(
-                      icon: Icons.location_on,
-                      title: 'Location Services (GPS)',
-                      description: 'Android Bluetooth discovery requires Location (GPS) to be ON in phone settings.',
-                      isGranted: _statusResult?.locationEnabled ?? false,
-                      actionWidget: (_statusResult?.locationEnabled == false)
-                          ? TextButton.icon(
-                              style: TextButton.styleFrom(
-                                foregroundColor: const Color(0xFF42A5F5),
-                                padding: EdgeInsets.zero,
-                              ),
-                              icon: const Icon(Icons.settings, size: 16),
-                              label: const Text('Turn ON Location', style: TextStyle(fontSize: 12)),
-                              onPressed: () async {
-                                await _permService.openLocationSettings();
-                              },
-                            )
-                          : null,
-                    ),
                     const SizedBox(height: 32),
 
                     // Action Buttons
@@ -221,29 +200,6 @@ class _PermissionScreenState extends State<PermissionScreen> with WidgetsBinding
                             style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                           ),
                           onPressed: _enableBluetooth,
-                        ),
-                      )
-                    else if (_statusResult?.locationEnabled == false)
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF1E88E5),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            elevation: 4,
-                          ),
-                          icon: const Icon(Icons.location_on, size: 20),
-                          label: const Text(
-                            'Turn ON Location (GPS)',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
-                          onPressed: () async {
-                            await _permService.openLocationSettings();
-                          },
                         ),
                       )
                     else
@@ -313,7 +269,7 @@ class _PermissionScreenState extends State<PermissionScreen> with WidgetsBinding
         color: const Color(0xFF22222A),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isGranted ? const Color(0xFF00E676).withOpacity(0.3) : Colors.white12,
+          color: isGranted ? const Color(0xFF00E676).withValues(alpha: 0.3) : Colors.white12,
           width: 1.5,
         ),
       ),
@@ -325,7 +281,7 @@ class _PermissionScreenState extends State<PermissionScreen> with WidgetsBinding
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: statusColor.withOpacity(0.12),
+                  color: statusColor.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, color: statusColor, size: 20),

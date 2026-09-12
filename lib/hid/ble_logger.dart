@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import '../models/log_entry.dart';
 
 class BleLogger {
@@ -18,7 +19,7 @@ class BleLogger {
     }
     _history.add(entry);
     _streamController.add(entry);
-    print('[${entry.level}] [${entry.tag}] ${entry.message}');
+    debugPrint('[${entry.level}] [${entry.tag}] ${entry.message}');
   }
 
   void info(String tag, String message) {

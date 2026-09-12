@@ -21,6 +21,8 @@ class HapticSettings {
   final bool vibrateOnAck;
   final bool aPlusBBridge;
   final bool continuousDpad;
+  final bool swapAB;
+  final bool swapXY;
 
   const HapticSettings({
     this.enabled = true,
@@ -30,6 +32,8 @@ class HapticSettings {
     this.vibrateOnAck = false, // Off by default to avoid constant vibration
     this.aPlusBBridge = true, // Allows single thumb to bridge A & B together
     this.continuousDpad = true, // Smooth rolling 8-way D-Pad
+    this.swapAB = true, // NES & N64 mode: A = Jump, B = Run/Attack correctly mapped
+    this.swapXY = false,
   });
 
   HapticSettings copyWith({
@@ -40,6 +44,8 @@ class HapticSettings {
     bool? vibrateOnAck,
     bool? aPlusBBridge,
     bool? continuousDpad,
+    bool? swapAB,
+    bool? swapXY,
   }) {
     return HapticSettings(
       enabled: enabled ?? this.enabled,
@@ -49,6 +55,8 @@ class HapticSettings {
       vibrateOnAck: vibrateOnAck ?? this.vibrateOnAck,
       aPlusBBridge: aPlusBBridge ?? this.aPlusBBridge,
       continuousDpad: continuousDpad ?? this.continuousDpad,
+      swapAB: swapAB ?? this.swapAB,
+      swapXY: swapXY ?? this.swapXY,
     );
   }
 
@@ -61,6 +69,8 @@ class HapticSettings {
       'vibrateOnAck': vibrateOnAck,
       'aPlusBBridge': aPlusBBridge,
       'continuousDpad': continuousDpad,
+      'swapAB': swapAB,
+      'swapXY': swapXY,
     };
   }
 
@@ -84,6 +94,8 @@ class HapticSettings {
       vibrateOnAck: (map['vibrateOnAck'] as bool?) ?? false,
       aPlusBBridge: (map['aPlusBBridge'] as bool?) ?? true,
       continuousDpad: (map['continuousDpad'] as bool?) ?? true,
+      swapAB: (map['swapAB'] as bool?) ?? true,
+      swapXY: (map['swapXY'] as bool?) ?? false,
     );
   }
 

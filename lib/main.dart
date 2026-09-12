@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import 'gamepad/controller_factory.dart';
+import 'gamepad/gamepad_controller.dart';
+import 'gamepad/n64_gamepad_controller.dart';
 import 'gamepad/nes_gamepad_controller.dart';
 import 'hid/ble_logger.dart';
 import 'hid/bluetooth_connection_manager.dart';
@@ -45,21 +49,32 @@ class BleGamepadHomePage extends StatefulWidget {
   State<BleGamepadHomePage> createState() => _BleGamepadHomePageState();
 }
 
-class _BleGamepadHomePageState extends State<BleGamepadHomePage> {
+class _BleGamepadHomePageState extends State<BleGamepadHomePage> with WidgetsBindingObserver {
   final PermissionService _permissionService = PermissionService();
   final BluetoothConnectionManager _connManager = BluetoothConnectionManager();
   final HidRegister _hidRegister = HidRegister();
-  final NesGamepadController _controller = NesGamepadController();
+  GamepadController _controller = ControllerFactory.createController(ControllerType.nes);
 
   bool _isLoading = true;
   bool _hasPermissions = false;
-  int _selectedTab = 0; // 0: Bluetooth, 1: Gamepad, 2: Logs
-  bool _isFullScreen = false;
+  int _selectedTab = 0; // 0: Bluetooth, 1: Logs
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     _checkPermissions();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _hasPermissions) {
+      _connManager.syncConnectionState();
+    }
   }
 
   Future<void> _checkPermissions() async {
@@ -77,11 +92,48 @@ class _BleGamepadHomePageState extends State<BleGamepadHomePage> {
 
   Future<void> _initServices() async {
     await _connManager.init();
+    final savedType = await ControllerFactory.loadActiveType();
+    _controller = ControllerFactory.createController(savedType);
     await _hidRegister.registerGamepad(_controller);
+  }
+
+  void _openFullscreenGamepad() async {
+    final savedType = await ControllerFactory.loadActiveType();
+    if (_controller.runtimeType !=
+        (savedType == ControllerType.nes ? NesGamepadController : N64GamepadController)) {
+      _controller = ControllerFactory.createController(savedType);
+    }
+
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GamepadScreen(
+          connectionManager: _connManager,
+          hidRegister: _hidRegister,
+          controller: _controller,
+          onControllerTypeChanged: (type) {
+            setState(() {
+              _controller = ControllerFactory.createController(type);
+            });
+          },
+        ),
+      ),
+    );
+
+    // When returning from Gamepad, restore portrait orientation
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: [SystemUiOverlay.top, SystemUiOverlay.bottom],
+    );
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _connManager.dispose();
     _hidRegister.dispose();
     super.dispose();
@@ -121,50 +173,40 @@ class _BleGamepadHomePageState extends State<BleGamepadHomePage> {
             onOpenPermissions: () {
               setState(() => _hasPermissions = false);
             },
-            onOpenGamepad: () {
-              setState(() => _selectedTab = 1);
-            },
+            onOpenGamepad: _openFullscreenGamepad,
           ),
 
-          // Tab 1: Gamepad Controller Screen
-          GamepadScreen(
-            connectionManager: _connManager,
-            hidRegister: _hidRegister,
-            controller: _controller,
-            onFullScreenChanged: (isFull) {
-              setState(() => _isFullScreen = isFull);
-            },
-          ),
-
-          // Tab 2: Live Event Logs Screen
+          // Tab 1: Live Event Logs Screen
           const LogViewerWidget(),
         ],
       ),
-      bottomNavigationBar: (_selectedTab == 1 && _isFullScreen)
-          ? null
-          : BottomNavigationBar(
-              backgroundColor: const Color(0xFF1B1B22),
-              selectedItemColor: const Color(0xFFD32F2F),
-              unselectedItemColor: Colors.white54,
-              currentIndex: _selectedTab,
-              onTap: (index) {
-                setState(() => _selectedTab = index);
-              },
-              items: const [
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.bluetooth),
-                  label: 'Bluetooth',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.sports_esports),
-                  label: 'Gamepad',
-                ),
-                BottomNavigationBarItem(
-                  icon: Icon(Icons.terminal),
-                  label: 'Logs',
-                ),
-              ],
-            ),
+      bottomNavigationBar: BottomNavigationBar(
+        backgroundColor: const Color(0xFF1B1B22),
+        selectedItemColor: const Color(0xFFD32F2F),
+        unselectedItemColor: Colors.white54,
+        currentIndex: _selectedTab == 0 ? 0 : 2,
+        onTap: (index) {
+          if (index == 1) {
+            _openFullscreenGamepad();
+          } else {
+            setState(() => _selectedTab = index == 2 ? 1 : 0);
+          }
+        },
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bluetooth),
+            label: 'Bluetooth',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.sports_esports),
+            label: 'Gamepad',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.terminal),
+            label: 'Logs',
+          ),
+        ],
+      ),
     );
   }
 }
